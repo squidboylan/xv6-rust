@@ -213,8 +213,8 @@ _forktest: forktest.o $(ULIB)
 	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o _forktest forktest.o ulib.o usys.o
 	$(OBJDUMP) -S _forktest > forktest.asm
 
-mkfs: mkfs.c fs.h
-	gcc -Werror -Wall $(CS333_CFLAGS) -o mkfs mkfs.c
+mkfs/target/release/mkfs:
+	cd mkfs; cargo build --release
 
 # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
 # that disk image changes after first build are persistent until clean.  More
@@ -241,8 +241,8 @@ UPROGS=\
 
 UPROGS += $(CS333_UPROGS) $(CS333_TPROGS)
 
-fs.img: mkfs README $(UPROGS)
-	./mkfs fs.img README $(UPROGS)
+fs.img: mkfs/target/release/mkfs README $(UPROGS)
+	mkfs/target/release/mkfs fs.img README $(UPROGS)
 
 -include *.d
 
@@ -250,10 +250,11 @@ clean:
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*.o *.d *.asm *.sym vectors.S bootblock entryother \
 	initcode initcode.out kernel xv6.img fs.img kernelmemfs \
-	xv6memfs.img mkfs .gdbinit \
+	xv6memfs.img .gdbinit \
 	$(UPROGS)
 	rm -rf dist dist-test
 	$(CARGO) clean
+	cd mkfs ; cargo clean ; cd -
 
 # make a printout
 FILES = $(shell grep -v '^\#' runoff.list)
@@ -315,7 +316,7 @@ qemu-nox-gdb: fs.img xv6.img .gdbinit
 # check in that version.
 
 EXTRA=\
-	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
+	ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
 	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
 	printf.c umalloc.c\
 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\

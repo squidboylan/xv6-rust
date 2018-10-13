@@ -12,6 +12,5 @@ initcode
 initcode.out
 kernel
 kernelmemfs
-mkfs
 .gdbinit
 target
