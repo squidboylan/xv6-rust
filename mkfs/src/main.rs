@@ -31,7 +31,7 @@ const NINDIRECT: u32 = BSIZE / 4;
 const MAXFILE: u32 = NDIRECT + NINDIRECT;
 
 #[repr(C)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct superblock {
     size: u32,       // Size of file system image (blocks)
     nblocks: u32,    // Number of data blocks
@@ -46,7 +46,7 @@ const NDIRECT: u32 = 12;
 
 // On-disk inode structure
 #[repr(C)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct dinode {
     f_type: u16,                        // File type
     major: u16,                         // Major device number (T_DEV only)
@@ -67,7 +67,7 @@ macro_rules! IBLOCK {
 const DIRSIZ: usize = 14;
 
 #[repr(C)]
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct dirent {
     inum: u16,
     // These are C chars, rust has 4 byte chars (for unicode and such)
@@ -137,12 +137,21 @@ fn test_xu32() {
     assert_eq!(xu32(500), 500);
 }
 
+// This takes a &mut T, then gets a mut slice of u8 of length size_of::<T>()
+// This is useful for serializing data to put onto disk. I think this looks scarier than it really
+// is, we're converting to an array of u8 so we cant have alignment issues and our new reference
+// cant outlive the passed in &mut T
+fn get_mut_u8_slice<'a, T>(data: &'a mut T) -> &'a mut [u8] {
+    unsafe {
+        from_raw_parts_mut(data as *mut T as *mut u8, size_of::<T>())
+    }
+}
+
 fn main() {
     let rootino: u32;
     let mut inum: u32;
     let mut off: u32;
     let mut buf: [u8; BSIZE as usize] = [0; BSIZE as usize];
-    let mut din: dinode = dinode::default();
 
     let args: Vec<String> = args().collect();
 
@@ -220,14 +229,12 @@ fn main() {
         name,
     };
     println!("prepped .");
-    unsafe {
-        iappend(
-            &mut fsfd,
-            rootino,
-            from_raw_parts_mut(&mut de as *mut dirent as *mut u8, size_of::<dirent>()),
-            size_of::<dirent>() as u32,
-        );
-    }
+    iappend(
+        &mut fsfd,
+        rootino,
+        get_mut_u8_slice(&mut de),
+        size_of::<dirent>() as u32,
+    );
 
     let mut name: [u8; DIRSIZ] = [0; DIRSIZ];
     name[0] = b'.';
@@ -237,14 +244,12 @@ fn main() {
         name,
     };
     println!("prepped ..");
-    unsafe {
-        iappend(
-            &mut fsfd,
-            rootino,
-            from_raw_parts_mut(&mut de as *mut dirent as *mut u8, size_of::<dirent>()),
-            size_of::<dirent>() as u32,
-        );
-    }
+    iappend(
+        &mut fsfd,
+        rootino,
+        get_mut_u8_slice(&mut de),
+        size_of::<dirent>() as u32,
+    );
 
     println!(". and .. have been created");
     for i in 2..args.len() {
@@ -277,14 +282,12 @@ fn main() {
             de.name[j - start] = fname[j];
         }
 
-        unsafe {
-            iappend(
-                &mut fsfd,
-                rootino,
-                from_raw_parts_mut(&mut de as *mut dirent as *mut u8, size_of::<dirent>()),
-                size_of::<dirent>() as u32,
-            );
-        }
+        iappend(
+            &mut fsfd,
+            rootino,
+            get_mut_u8_slice(&mut de),
+            size_of::<dirent>() as u32,
+        );
 
         println!("Added dirent");
 
@@ -296,7 +299,7 @@ fn main() {
     }
 
     // fix size of root inode dir
-    rinode(&mut fsfd, rootino, &mut din);
+    let mut din = rinode(&mut fsfd, rootino);
     off = xu32(din.size);
     off = ((off / BSIZE) + 1) * BSIZE;
     din.size = xu32(off);
@@ -395,23 +398,18 @@ fn winode(f: &mut File, inum: u32, ip: &dinode) {
     wsect(f, bn, &buf);
 }
 
-fn rinode(f: &mut File, inum: u32, ip: &mut dinode) {
+fn rinode(f: &mut File, inum: u32) -> dinode {
     let mut buf: [u8; BSIZE as usize] = [0; BSIZE as usize];
     let sb = SB.lock().unwrap();
 
     let bn = IBLOCK!(inum, sb);
     rsect(f, bn, &mut buf);
 
-    let dip = &mut buf[0] as &mut u8 as *mut u8 as *mut dinode;
+    let dip = &mut buf[0] as *mut u8 as *mut dinode;
     // This is pretty hacky, OK for C code but would be good to have a better abstraction for rust
     unsafe {
         let dip = dip.add(inum as usize % *IPB as usize);
-        ip.f_type = (*dip).f_type;
-        ip.major = (*dip).major;
-        ip.minor = (*dip).minor;
-        ip.nlink = (*dip).nlink;
-        ip.size = (*dip).size;
-        ip.addrs = (*dip).addrs;
+        (*dip).clone()
     }
 }
 
@@ -420,14 +418,13 @@ fn iappend(f: &mut File, inum: u32, xp: &mut [u8], mut n: u32) {
     let mut fbn: u32;
     let mut off: u32;
     let mut n1: u32;
-    let mut din: dinode = dinode::default();
     let mut buf: [u8; BSIZE as usize] = [0; BSIZE as usize];
     let mut indirect: [u32; NINDIRECT as usize] = [0; NINDIRECT as usize];
     let mut x: u32;
 
     let mut freeblock = FREEBLOCK.lock().unwrap();
 
-    rinode(f, inum, &mut din);
+    let mut din = rinode(f, inum);
     off = xu32(din.size);
     while n > 0 {
         fbn = off / BSIZE;
@@ -444,15 +441,11 @@ fn iappend(f: &mut File, inum: u32, xp: &mut [u8], mut n: u32) {
                 din.addrs[NDIRECT as usize] = xu32(*freeblock);
                 *freeblock += 1;
             }
-            rsect(f, xu32(din.addrs[NDIRECT as usize]), unsafe {
-                from_raw_parts_mut(&mut indirect[0] as *mut u32 as *mut u8, NINDIRECT as usize * 4)
-            });
+            rsect(f, xu32(din.addrs[NDIRECT as usize]), get_mut_u8_slice(&mut indirect));
             if indirect[fbn as usize - NDIRECT as usize] == 0 {
                 indirect[fbn as usize - NDIRECT as usize] = xu32(*freeblock);
                 *freeblock += 1;
-                wsect(f, xu32(din.addrs[NDIRECT as usize]), unsafe {
-                    from_raw_parts_mut(&mut indirect[0] as *mut u32 as *mut u8, NINDIRECT as usize * 4)
-                });
+                wsect(f, xu32(din.addrs[NDIRECT as usize]), get_mut_u8_slice(&mut indirect));
             }
             x = xu32(indirect[fbn as usize - NDIRECT as usize]);
         }
